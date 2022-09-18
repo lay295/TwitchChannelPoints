@@ -164,18 +164,30 @@ namespace TwitchChannelPoints
                         JArray userObj = JArray.Parse(userRes);
                         userId = userObj[0]["data"]["currentUser"]["id"].ToString();
                     }
-                    JObject liveRes = JObject.Parse(await clientTwitch.DownloadStringTaskAsync("https://twitch-api.twitcharchives.workers.dev/streams?user_login=" + String.Join("&user_login=", dataGridSource.List.OfType<Streamer>().Select(x => x.Name))));
+                    JObject liveRes = JObject.Parse(await clientTwitch.UploadStringTaskAsync("https://gql.twitch.tv/gql", "{\"query\":\"query {users(logins: [" + String.Join(',', dataGridSource.List.OfType<Streamer>().Select(x => "\\\"" + x.Name + "\\\"")) + "]) {id,login,displayName,stream{id}}}\"}"));
                     List<Streamer> streamerList = new List<Streamer>();
 
-                    foreach (var streamData in liveRes["data"])
+                    for (int i = 0; i < liveRes["data"]["users"].Count(); i++)
+                    {
+                        if (liveRes["data"]["users"][i]["stream"].Type == JTokenType.Null)
+                        {
+                            liveRes["data"]["users"][i].Remove();
+                            i--;
+                        }
+                    }
+
+                    foreach (var streamData in liveRes["data"]["users"])
                     {
                         if (streamerList.Count == 2)
                             break;
 
-                        string broadcastId = streamData["id"].ToString();
+                        if (streamData["stream"].Type == JTokenType.Null)
+                            continue;
+
+                        string broadcastId = streamData["stream"]["id"].ToString();
                         if (!broadcastCount.ContainsKey(broadcastId) || broadcastCount[broadcastId] < 6)
                         {
-                            streamerList.Add(dataGridSource.List.OfType<Streamer>().Where(x => x.Name.ToLower() == streamData["user_name"].ToString().ToLower()).First());
+                            streamerList.Add(dataGridSource.List.OfType<Streamer>().Where(x => x.Name.ToLower() == streamData["login"].ToString().ToLower()).First());
                         }
                     }
 
@@ -192,7 +204,7 @@ namespace TwitchChannelPoints
                         if (streamerList.Count == 2)
                             break;
 
-                        if (liveRes["data"].Any(x => x["user_name"].ToString().ToLower() == ((Streamer)dataGridSource[i]).Name.ToLower()))
+                        if (liveRes["data"]["users"].Any(x => x["login"].ToString().ToLower() == ((Streamer)dataGridSource[i]).Name.ToLower()))
                         {
                             streamerList.Add((Streamer)dataGridSource[i]);
                         }
@@ -200,7 +212,7 @@ namespace TwitchChannelPoints
 
                     for (int i = 0; i < streamerList.Count; i++)
                     {
-                        JToken streamData = liveRes["data"].Where(x => x["user_name"].ToString().ToLower() == streamerList[i].Name.ToLower()).First();
+                        JToken streamData = liveRes["data"]["users"].Where(x => x["login"].ToString().ToLower() == streamerList[i].Name.ToLower()).First();
                         string gqlRes = await clientTwitch.UploadStringTaskAsync("https://gql.twitch.tv/gql", "{\"operationName\": \"ChannelPointsContext\",\"variables\": {\"channelLogin\": \"" + streamerList[i].Name.ToLower() + "\"},\"extensions\": {\"persistedQuery\": {\"version\": 1, \"sha256Hash\": \"9988086babc615a918a1e9a722ff41d98847acac822645209ac7379eecb27152\"}}}");
                         JObject res = JObject.Parse(gqlRes);
                         int newPoints = res["data"]["community"]["channel"]["self"]["communityPoints"]["balance"].ToObject<int>();
@@ -208,7 +220,7 @@ namespace TwitchChannelPoints
                         if (res["data"]["community"]["channel"]["self"]["communityPoints"]["availableClaim"].ToString() != "")
                         {
                             string claim_id = res["data"]["community"]["channel"]["self"]["communityPoints"]["availableClaim"]["id"].ToString();
-                            await clientTwitch.UploadStringTaskAsync("https://gql.twitch.tv/gql", "{\"operationName\": \"ClaimCommunityPoints\",\"variables\": {\"input\": {\"channelID\": \"" + streamData["user_id"].ToString() + "\", \"claimID\": \"" + claim_id + "\"}},\"extensions\": {\"persistedQuery\": {\"version\": 1, \"sha256Hash\": \"46aaeebe02c99afdf4fc97c7c0cba964124bf6b0af229395f1f6d1feed05b3d0\"}}}");
+                            await clientTwitch.UploadStringTaskAsync("https://gql.twitch.tv/gql", "{\"operationName\": \"ClaimCommunityPoints\",\"variables\": {\"input\": {\"channelID\": \"" + streamData["id"].ToString() + "\", \"claimID\": \"" + claim_id + "\"}},\"extensions\": {\"persistedQuery\": {\"version\": 1, \"sha256Hash\": \"46aaeebe02c99afdf4fc97c7c0cba964124bf6b0af229395f1f6d1feed05b3d0\"}}}");
                         }
 
                         if (streamerList[i].SpadeUrl == null)
@@ -219,8 +231,8 @@ namespace TwitchChannelPoints
                         }
 
                         JObject data = new JObject();
-                        data["channel_id"] = streamData["user_id"].ToString();
-                        data["broadcast_id"] = streamData["id"].ToString();
+                        data["channel_id"] = streamData["id"].ToString();
+                        data["broadcast_id"] = streamData["stream"]["id"].ToString();
                         data["player"] = "site";
                         data["user_id"] = userId;
                         JObject data_root = new JObject();
@@ -229,13 +241,13 @@ namespace TwitchChannelPoints
                         string payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(data_root.ToString(Newtonsoft.Json.Formatting.None)));
                         await clientTwitch.UploadStringTaskAsync(streamerList[i].SpadeUrl, payload);
 
-                        if (broadcastCount.ContainsKey(streamData["id"].ToString()))
+                        if (broadcastCount.ContainsKey(streamData["stream"]["id"].ToString()))
                         {
-                            broadcastCount[streamData["id"].ToString()] += 1;
+                            broadcastCount[streamData["stream"]["id"].ToString()] += 1;
                         }
                         else
                         {
-                            broadcastCount[streamData["id"].ToString()] = 1;
+                            broadcastCount[streamData["stream"]["id"].ToString()] = 1;
                         }
 
                         if (oldPoints.ContainsKey(streamerList[i].Name))
